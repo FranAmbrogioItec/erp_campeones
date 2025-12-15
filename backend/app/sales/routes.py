@@ -1,0 +1,602 @@
+import csv
+from io import StringIO
+from flask import Blueprint, jsonify, request, Response
+from app.extensions import db
+# IMPORTAMOS DESDE TUS ARCHIVOS SEPARADOS
+from app.sales.models import Venta, DetalleVenta, MetodoPago, SesionCaja, MovimientoCaja
+from app.products.models import Producto, ProductoVariante, Inventario
+from flask_jwt_extended import jwt_required
+from sqlalchemy import desc, func, extract
+from datetime import date, datetime
+
+bp = Blueprint('sales', __name__)
+
+# --- NUEVO: AGREGAR MOVIMIENTO EN CAJA ---
+@bp.route('/caja/movement', methods=['POST'])
+@jwt_required()
+def add_movement():
+    # Buscar caja abierta
+    sesion = SesionCaja.query.filter_by(estado='abierta').first()
+    if not sesion: return jsonify({"msg": "No hay caja abierta"}), 400
+
+    data = request.get_json()
+    try:
+        mov = MovimientoCaja(
+            id_sesion=sesion.id_sesion,
+            tipo=data.get('tipo', 'retiro'),
+            monto=data['monto'],
+            descripcion=data.get('descripcion')
+        )
+        db.session.add(mov)
+        db.session.commit()
+        return jsonify({"msg": "Movimiento registrado"}), 201
+    except Exception as e:
+        return jsonify({"msg": str(e)}), 500
+
+# --- NUEVO: OBTENER HISTORIAL Y TOTALES ---
+@bp.route('/history', methods=['GET'])
+@jwt_required()
+def get_sales_history():
+    try:
+        # 1. Verificar si el frontend pide solo la sesión actual (para la Caja) o todo (para Historial)
+        solo_actual = request.args.get('current_session') == 'true'
+        
+        # 2. Query Base: Ventas ordenadas por fecha (más nuevas primero)
+        # Usamos joinedload para traer el nombre del método de pago eficientemente
+        query = Venta.query.options(db.joinedload(Venta.metodo)).order_by(desc(Venta.fecha_venta))
+
+        if solo_actual:
+            # Buscar la sesión abierta
+            sesion = SesionCaja.query.filter_by(estado='abierta').first()
+            if sesion:
+                # Filtramos ventas hechas DESPUÉS de la apertura
+                query = query.filter(Venta.fecha_venta >= sesion.fecha_apertura)
+            else:
+                # Si no hay caja abierta, la lista actual está vacía
+                return jsonify({
+                    "history": [], 
+                    "today_summary": {"total": 0, "count": 0}
+                }), 200
+        else:
+            # Si es historial general, limitamos a las últimas 100 para no saturar
+            query = query.limit(100)
+
+        ventas = query.all()
+        
+        # 3. Procesar datos
+        lista_ventas = []
+        for v in ventas:
+            # A. Generar resumen en texto para la tabla (Ej: "Camiseta x2...")
+            descripcion_items = ", ".join([f"{d.variante.producto.nombre} ({d.variante.talla}) x{d.cantidad}" for d in v.detalles])
+            
+            # B. Generar detalle estructurado para IMPRIMIR TICKET
+            items_detail = []
+            for d in v.detalles:
+                items_detail.append({
+                    "nombre": d.variante.producto.nombre,
+                    "talle": d.variante.talla,
+                    "cantidad": d.cantidad,
+                    "precio": float(d.precio_unitario), # Precio unitario
+                    "subtotal": float(d.subtotal)       # Subtotal de la línea
+                })
+
+            lista_ventas.append({
+                "id": v.id_venta,
+                "fecha": v.fecha_venta.strftime('%d/%m/%Y %H:%M'), # Formato legible
+                "total": float(v.total),
+                "metodo": v.metodo.nombre if v.metodo else "N/A",
+                "items": descripcion_items,       # Para mostrar en tabla
+                "items_detail": items_detail,     # Para enviar al componente Ticket
+                "estado": v.estado
+            })
+
+        # 4. Calcular Totales del DÍA ACTUAL (Independiente de la sesión, calendario puro)
+        hoy = date.today()
+        total_hoy = db.session.query(func.sum(Venta.total)).filter(func.date(Venta.fecha_venta) == hoy).scalar() or 0
+        cantidad_ventas_hoy = db.session.query(func.count(Venta.id_venta)).filter(func.date(Venta.fecha_venta) == hoy).scalar() or 0
+
+        return jsonify({
+            "history": lista_ventas,
+            "today_summary": {
+                "total": float(total_hoy),
+                "count": cantidad_ventas_hoy
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"Error historial: {e}")
+        return jsonify({"msg": "Error cargando historial"}), 500
+
+# --- NUEVO ENDPOINT: Listar Métodos ---
+@bp.route('/payment-methods', methods=['GET'])
+@jwt_required()
+def get_payment_methods():
+    metodos = MetodoPago.query.all()
+    return jsonify([{"id": m.id_metodo_pago, "nombre": m.nombre} for m in metodos]), 200
+
+@bp.route('/scan/<string:sku>', methods=['GET'])
+@jwt_required()
+def scan_product(sku):
+    variante = ProductoVariante.query.filter_by(codigo_sku=sku).first()
+
+    if not variante:
+        return jsonify({"found": False, "msg": "Producto no encontrado"}), 404
+
+    # Verificamos si tiene inventario asociado
+    stock = variante.inventario.stock_actual if variante.inventario else 0
+
+    return jsonify({
+        "found": True,
+        "product": {
+            "id_variante": variante.id_variante,
+            "sku": variante.codigo_sku,
+            "nombre": variante.producto.nombre,
+            "talle": variante.talla,
+            "precio": float(variante.producto.precio),
+            "stock_actual": stock
+        }
+    }), 200
+
+@bp.route('/checkout', methods=['POST'])
+@jwt_required()
+def checkout():
+    data = request.get_json()
+    items = data.get('items', [])
+    
+    # Recibimos el total calculado por el sistema (suma de items)
+    subtotal_sistema = data.get('subtotal_calculado', 0)
+    
+    # Recibimos el total que EL VENDEDOR DECIDIÓ COBRAR
+    total_final = data.get('total_final', subtotal_sistema) 
+    
+    metodo_id = data.get('metodo_pago_id')
+
+    if not items: return jsonify({"msg": "Carrito vacío"}), 400
+    if not metodo_id: return jsonify({"msg": "Falta método de pago"}), 400
+
+    try:
+        # Calculamos el descuento
+        descuento_aplicado = float(subtotal_sistema) - float(total_final)
+        
+        # Validamos que no sea un "descuento negativo" absurdo (cobrar de más está permitido como propina/ajuste)
+        # pero si el total final es negativo, error.
+        if float(total_final) < 0:
+             return jsonify({"msg": "El total no puede ser negativo"}), 400
+
+        # 1. Crear Venta
+        nueva_venta = Venta(
+            subtotal=subtotal_sistema,   # Lo que valía la mercadería
+            descuento=descuento_aplicado, # La rebaja
+            total=total_final,           # Lo que entra a la caja
+            id_cliente=None,
+            id_metodo_pago=metodo_id
+        )
+        db.session.add(nueva_venta)
+        db.session.flush()
+
+        # 2. Procesar Ítems (Igual que antes)
+        for item in items:
+            variante_db = ProductoVariante.query.get(item['id_variante'])
+            
+            if not variante_db or not variante_db.inventario:
+                db.session.rollback()
+                return jsonify({"msg": f"Error stock: {item.get('nombre')}"}), 400
+
+            if variante_db.inventario.stock_actual < item['cantidad']:
+                db.session.rollback()
+                return jsonify({"msg": f"Stock insuficiente: {variante_db.producto.nombre}"}), 400
+
+            # Restar stock
+            variante_db.inventario.stock_actual -= item['cantidad']
+
+            # Crear detalle
+            detalle = DetalleVenta(
+                id_venta=nueva_venta.id_venta,
+                id_variante=variante_db.id_variante,
+                cantidad=item['cantidad'],
+                precio_unitario=item['precio'],
+                subtotal=item['subtotal']
+            )
+            db.session.add(detalle)
+
+        db.session.commit()
+        return jsonify({"msg": "Venta exitosa", "id": nueva_venta.id_venta}), 201
+
+    except Exception as e:
+        db.session.rollback()
+        print(f"ERROR CHECKOUT: {e}")
+        return jsonify({"msg": "Error interno"}), 500
+
+# --- 1. VER ESTADO DE CAJA ---
+@bp.route('/caja/status', methods=['GET'])
+@jwt_required()
+def get_caja_status():
+    # 1. Buscar sesión abierta
+    sesion = SesionCaja.query.filter_by(estado='abierta').first()
+    
+    if not sesion:
+        return jsonify({"estado": "cerrada"}), 200
+    
+    # 2. Buscar ventas y retiros
+    ventas = Venta.query.filter(Venta.fecha_venta >= sesion.fecha_apertura).all()
+    retiros = MovimientoCaja.query.filter_by(id_sesion=sesion.id_sesion, tipo='retiro').all()
+    
+    # --- NUEVO: Serializar la lista de retiros para el frontend ---
+    lista_retiros = [{
+        "id": r.id_movimiento,
+        "hora": r.fecha.strftime('%H:%M'),
+        "descripcion": r.descripcion,
+        "monto": float(r.monto)
+    } for r in retiros]
+    # -------------------------------------------------------------
+
+    total_retiros = sum(m.monto for m in retiros)
+
+    # 4. Calcular Desglose (Igual que antes)
+    total_ventas = 0
+    desglose = {"Efectivo": 0, "Tarjeta": 0, "Transferencia": 0, "Otros": 0}
+
+    for v in ventas:
+        total_ventas += v.total
+        nombre_metodo = v.metodo.nombre if v.metodo else "Otros"
+        if "Efectivo" in nombre_metodo: desglose["Efectivo"] += v.total
+        elif "Tarjeta" in nombre_metodo: desglose["Tarjeta"] += v.total
+        elif "Transferencia" in nombre_metodo: desglose["Transferencia"] += v.total
+        else: desglose["Otros"] += v.total
+
+    # 5. Calcular Totales Esperados
+    efectivo_en_caja = float(sesion.monto_inicial) + float(desglose["Efectivo"]) - float(total_retiros)
+
+    return jsonify({
+        "estado": "abierta",
+        "id_sesion": sesion.id_sesion,
+        "fecha_apertura": sesion.fecha_apertura.strftime('%d/%m %H:%M'),
+        "monto_inicial": float(sesion.monto_inicial),
+        "ventas_total": float(total_ventas),
+        "total_retiros": float(total_retiros),
+        
+        # --- NUEVO CAMPO EN LA RESPUESTA ---
+        "movimientos": lista_retiros, 
+        # -----------------------------------
+
+        "desglose": {
+            "efectivo_ventas": float(desglose["Efectivo"]),
+            "tarjeta": float(desglose["Tarjeta"]),
+            "transferencia": float(desglose["Transferencia"]),
+            "otros": float(desglose["Otros"])
+        },
+        "totales_esperados": {
+            "efectivo_en_caja": efectivo_en_caja,
+            "digital": float(desglose["Tarjeta"]) + float(desglose["Transferencia"]) + float(desglose["Otros"])
+        }
+    }), 200
+
+# --- 2. ABRIR CAJA ---
+@bp.route('/caja/open', methods=['POST'])
+@jwt_required()
+def open_caja():
+    # Verificar que no haya otra abierta
+    if SesionCaja.query.filter_by(estado='abierta').first():
+        return jsonify({"msg": "Ya existe una caja abierta"}), 400
+
+    data = request.get_json()
+    monto_inicial = data.get('monto_inicial', 0)
+
+    nueva_sesion = SesionCaja(monto_inicial=monto_inicial, estado='abierta')
+    db.session.add(nueva_sesion)
+    db.session.commit()
+    
+    return jsonify({"msg": "Caja abierta exitosamente"}), 201
+
+# --- 3. CERRAR CAJA ---
+@bp.route('/caja/close', methods=['POST'])
+@jwt_required()
+def close_caja():
+    sesion = SesionCaja.query.filter_by(estado='abierta').first()
+    if not sesion:
+        return jsonify({"msg": "No hay caja para cerrar"}), 400
+
+    data = request.get_json()
+    total_real_usuario = data.get('total_real') # El efectivo que contó el usuario
+
+    if total_real_usuario is None:
+        return jsonify({"msg": "Debes ingresar el monto contado"}), 400
+
+    # 1. Obtener todas las ventas de la sesión
+    ventas = Venta.query.filter(Venta.fecha_venta >= sesion.fecha_apertura).all()
+    
+    # 2. Sumar SOLO lo que fue en EFECTIVO
+    ventas_efectivo = 0
+    total_ventas_global = 0 # Para guardarlo como dato estadístico
+
+    for v in ventas:
+        total_ventas_global += v.total
+        # Verificamos si el método contiene "Efectivo"
+        if v.metodo and "Efectivo" in v.metodo.nombre:
+            ventas_efectivo += v.total
+
+    # 3. Sumar Retiros/Gastos (Restan a la caja)
+    retiros = MovimientoCaja.query.filter_by(id_sesion=sesion.id_sesion, tipo='retiro').all()
+    total_retiros = sum(m.monto for m in retiros)
+
+    # 4. Cálculo del Dinero Esperado en el Cajón
+    # Esperado = Base + Entradas Efectivo - Salidas Efectivo
+    esperado_efectivo = float(sesion.monto_inicial) + float(ventas_efectivo) - float(total_retiros)
+    
+    # 5. Calcular Diferencia (Sobra o Falta)
+    diferencia = float(total_real_usuario) - esperado_efectivo
+
+    # Actualizar sesión
+    sesion.fecha_cierre = datetime.now()
+    sesion.total_ventas_sistema = total_ventas_global # Guardamos todo lo vendido
+    sesion.total_real = total_real_usuario
+    sesion.diferencia = diferencia # La diferencia es solo sobre el efectivo
+    sesion.estado = 'cerrada'
+
+    db.session.commit()
+
+    return jsonify({
+        "msg": "Caja cerrada",
+        "resumen": {
+            "esperado": esperado_efectivo, # Enviamos lo que debía haber en billetes
+            "real": float(total_real_usuario),
+            "diferencia": diferencia
+        }
+    }), 200
+
+
+# 1. LISTAR TODAS LAS CAJAS CERRADAS
+@bp.route('/caja/list', methods=['GET'])
+@jwt_required()
+def list_closed_sessions():
+    # Traemos las últimas 20 cajas cerradas
+    sesiones = SesionCaja.query.filter_by(estado='cerrada')\
+        .order_by(desc(SesionCaja.fecha_cierre)).limit(20).all()
+    
+    resultado = []
+    for s in sesiones:
+        resultado.append({
+            "id": s.id_sesion,
+            "apertura": s.fecha_apertura.strftime('%d/%m/%Y %H:%M'), 
+            "cierre": s.fecha_cierre.strftime('%d/%m/%Y %H:%M'),
+            "ventas": float(s.total_ventas_sistema),
+            "diferencia": float(s.diferencia)
+        })
+    return jsonify(resultado), 200
+
+# 2. DESCARGAR CSV DE UNA SESIÓN
+@bp.route('/caja/<int:id>/export', methods=['GET'])
+def export_caja_csv(id):
+    # Nota: Quitamos jwt_required para facilitar descarga directa desde navegador, 
+    # o lo pasamos como token en URL si quieres seguridad estricta.
+    
+    sesion = SesionCaja.query.get(id)
+    if not sesion: return "Caja no encontrada", 404
+
+    # Buscar ventas de esa sesión (entre apertura y cierre)
+    ventas = Venta.query.filter(
+        Venta.fecha_venta >= sesion.fecha_apertura,
+        Venta.fecha_venta <= sesion.fecha_cierre
+    ).all()
+
+    # Buscar movimientos (retiros)
+    movimientos = MovimientoCaja.query.filter_by(id_sesion=id).all()
+
+    # Generar CSV en memoria
+    si = StringIO()
+    cw = csv.writer(si)
+    
+    # Encabezados
+    cw.writerow(['REPORTE DE CAJA #', id])
+    cw.writerow(['Apertura', sesion.fecha_apertura, 'Monto Inicial', sesion.monto_inicial])
+    cw.writerow(['Cierre', sesion.fecha_cierre, 'Total Real Contado', sesion.total_real])
+    cw.writerow([])
+    
+    # Sección Ventas
+    cw.writerow(['--- VENTAS ---'])
+    cw.writerow(['ID Venta', 'Hora', 'Metodo Pago', 'Total', 'Items'])
+    for v in ventas:
+        items_str = " | ".join([f"{d.variante.producto.nombre} x{d.cantidad}" for d in v.detalles])
+        metodo = v.metodo.nombre if v.metodo else "N/A"
+        cw.writerow([v.id_venta, v.fecha_venta.strftime('%H:%M'), metodo, v.total, items_str])
+    
+    cw.writerow([])
+    
+    # Sección Retiros
+    cw.writerow(['--- RETIROS / GASTOS ---'])
+    cw.writerow(['Hora', 'Monto', 'Descripcion'])
+    for m in movimientos:
+        cw.writerow([m.fecha.strftime('%H:%M'), m.monto, m.descripcion])
+
+    output = Response(si.getvalue(), mimetype="text/csv")
+    output.headers["Content-Disposition"] = f"attachment; filename=caja_{id}_{sesion.fecha_cierre.date()}.csv"  
+    return output
+
+
+@bp.route('/dashboard/stats', methods=['GET'])
+@jwt_required()
+def get_dashboard_stats():
+    try:
+        hoy = date.today()
+        mes_actual = hoy.month
+        anio_actual = hoy.year
+
+        # 1. VENTAS HOY
+        total_hoy = db.session.query(func.sum(Venta.total)).filter(func.date(Venta.fecha_venta) == hoy).scalar() or 0
+        count_hoy = db.session.query(func.count(Venta.id_venta)).filter(func.date(Venta.fecha_venta) == hoy).scalar() or 0
+
+        # 2. VENTAS DEL MES (KPI Clave)
+        total_mes = db.session.query(func.sum(Venta.total)).filter(
+            extract('month', Venta.fecha_venta) == mes_actual,
+            extract('year', Venta.fecha_venta) == anio_actual
+        ).scalar() or 0
+
+        # 3. STOCK CRÍTICO (Tu pedido específico)
+        # Buscamos variantes donde el stock sea menor o igual al mínimo
+        low_stock_query = db.session.query(Producto, ProductoVariante, Inventario)\
+            .join(ProductoVariante, Producto.id_producto == ProductoVariante.id_producto)\
+            .join(Inventario, ProductoVariante.id_variante == Inventario.id_variante)\
+            .filter(Inventario.stock_actual <= Inventario.stock_minimo)\
+            .limit(10).all() # Limitamos a 10 para no saturar el dashboard
+
+        low_stock_list = []
+        for prod, var, inv in low_stock_query:
+            low_stock_list.append({
+                "id": prod.id_producto,
+                "nombre": prod.nombre,
+                "talle": var.talla,
+                "sku": var.codigo_sku,
+                "stock": inv.stock_actual,
+                "minimo": inv.stock_minimo
+            })
+
+        # 4. ÚLTIMAS 5 VENTAS (Actividad)
+        ultimas_ventas = Venta.query.order_by(desc(Venta.fecha_venta)).limit(5).all()
+        recent_activity = [{
+            "hora": v.fecha_venta.strftime('%H:%M'),
+            "total": float(v.total),
+            "metodo": v.metodo.nombre if v.metodo else "-"
+        } for v in ultimas_ventas]
+
+        # 5. ESTADO CAJA
+        caja = SesionCaja.query.filter_by(estado='abierta').first()
+        caja_status = "abierta" if caja else "cerrada"
+
+        return jsonify({
+            "financial": {
+                "hoy": float(total_hoy),
+                "mes": float(total_mes),
+                "tickets": count_hoy,
+                "caja_status": caja_status
+            },
+            "low_stock": low_stock_list,
+            "recent_activity": recent_activity
+        }), 200
+
+    except Exception as e:
+        print(e)
+        return jsonify({"msg": "Error dashboard"}), 500
+
+
+# backend/app/sales/routes.py
+
+# ... imports ...
+from sqlalchemy import func, desc
+
+@bp.route('/stats/period', methods=['POST'])
+@jwt_required()
+def get_period_stats():
+    data = request.get_json()
+    start_date = data.get('start_date') # String 'YYYY-MM-DD'
+    end_date = data.get('end_date')     # String 'YYYY-MM-DD'
+
+    if not start_date or not end_date:
+        return jsonify({"msg": "Fechas requeridas"}), 400
+
+    try:
+        # Añadimos hora al end_date para incluir todo el último día (hasta 23:59:59)
+        end_date_full = f"{end_date} 23:59:59"
+
+        # 1. QUERY BASE: Ventas en el rango (excluyendo canceladas si tuvieras)
+        query_base = Venta.query.filter(
+            Venta.fecha_venta >= start_date,
+            Venta.fecha_venta <= end_date_full
+        )
+
+        # 2. TOTALES GENERALES
+        total_ingresos = query_base.with_entities(func.sum(Venta.total)).scalar() or 0
+        total_tickets = query_base.with_entities(func.count(Venta.id_venta)).scalar() or 0
+        ticket_promedio = total_ingresos / total_tickets if total_tickets > 0 else 0
+
+        # 3. VENTAS POR MÉTODO DE PAGO
+        # Group by MetodoPago
+        by_method = db.session.query(
+            MetodoPago.nombre, 
+            func.sum(Venta.total), 
+            func.count(Venta.id_venta)
+        ).join(Venta).filter(
+            Venta.fecha_venta >= start_date,
+            Venta.fecha_venta <= end_date_full
+        ).group_by(MetodoPago.nombre).all()
+
+        methods_data = [{
+            "nombre": m[0], 
+            "total": float(m[1]), 
+            "count": m[2]
+        } for m in by_method]
+
+        # 4. TOP 5 PRODUCTOS MÁS VENDIDOS (Por cantidad)
+        top_products = db.session.query(
+            Producto.nombre,
+            func.sum(DetalleVenta.cantidad).label('qty_total'),
+            func.sum(DetalleVenta.subtotal).label('money_total')
+        ).join(ProductoVariante, DetalleVenta.id_variante == ProductoVariante.id_variante)\
+         .join(Producto, ProductoVariante.id_producto == Producto.id_producto)\
+         .join(Venta, DetalleVenta.id_venta == Venta.id_venta)\
+         .filter(Venta.fecha_venta >= start_date, Venta.fecha_venta <= end_date_full)\
+         .group_by(Producto.id_producto)\
+         .order_by(desc('money_total'))\
+         .limit(5).all()
+
+        top_products_data = [{
+            "nombre": tp[0], 
+            "unidades": int(tp[1]), 
+            "recaudado": float(tp[2])
+        } for tp in top_products]
+
+        return jsonify({
+            "summary": {
+                "ingresos": float(total_ingresos),
+                "tickets": total_tickets,
+                "promedio": float(ticket_promedio)
+            },
+            "by_method": methods_data,
+            "top_products": top_products_data
+        }), 200
+
+    except Exception as e:
+        print(f"Error stats: {e}")
+        return jsonify({"msg": "Error calculando estadísticas"}), 500
+
+
+
+@bp.route('/stats/products-detail', methods=['POST'])
+@jwt_required()
+def get_product_stats_detail():
+    data = request.get_json()
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+
+    if not start_date or not end_date: return jsonify({"msg": "Fechas requeridas"}), 400
+
+    try:
+        end_date_full = f"{end_date} 23:59:59"
+
+        # Consulta corregida con GROUP BY completo
+        stats = db.session.query(
+            Producto.nombre,
+            Categoria.nombre.label('categoria'),
+            func.sum(DetalleVenta.cantidad).label('unidades'),
+            func.sum(DetalleVenta.subtotal).label('ingresos')
+        ).select_from(DetalleVenta)\
+         .join(ProductoVariante, DetalleVenta.id_variante == ProductoVariante.id_variante)\
+         .join(Producto, ProductoVariante.id_producto == Producto.id_producto)\
+         .join(Categoria, Producto.id_categoria == Categoria.id_categoria, isouter=True)\
+         .join(Venta, DetalleVenta.id_venta == Venta.id_venta)\
+         .filter(Venta.fecha_venta >= start_date, Venta.fecha_venta <= end_date_full)\
+         .group_by(Producto.id_producto, Producto.nombre, Categoria.nombre)\
+         .order_by(desc('unidades'))\
+         .all()
+
+        resultado = [{
+            "nombre": row.nombre,
+            "categoria": row.categoria or "Sin categoría",
+            "unidades": int(row.unidades),
+            "ingresos": float(row.ingresos)
+        } for row in stats]
+
+        return jsonify(resultado), 200
+
+    except Exception as e:
+        print(f"Error detalle productos: {e}")
+        return jsonify({"msg": str(e)}), 500

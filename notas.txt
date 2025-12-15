@@ -1,0 +1,114 @@
+usuario: francisco@admin.com
+password: admin123
+
+db:
+root 
+0044295023  
+
+pendiente:
+
+-cargar productos reales
+    -todos los clubes liga argentina (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -premier league (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -la liga (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -b nacional (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -selecciones (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -brasileirao (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -retro (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -serie a (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -bundesliga (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -ligue 1 (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -mls (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -liga portugal (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    -liga uruguay (talle S-M-L-XL-XXL y 4-6-8-10-12-14-16)
+    
+
+-------------------------- FUNCIONES A AÑADIR --------------------------
+- ver funcion en caso de que paguen con 2 medios de pago, poder añadir funcion de que agreguen ventas sin tickar codigo
+
+- ver que el filtrado en page products coincida aunque no se escriba en el orden especifico del producto (por ejemplo: boca titu...)
+
+- agregar funcion para poder ver 'motivo' en caso de que se haga retiro de plata de caja
+
+- generar una pagina exclusivamente de guardado de arqueos de caja donde el cliente pueda controlar las ventas de todos los dias, y que se vayan agrupando por mes/año
+
+- crear modulo para compras, ver lo que sea necesario modificar en la base de datos, donde el usuario tenga una pagina para cargar el detalle de lo que compro (pueden ser productos ya cargados en el inventario o que requiera la creacion de nuevos productos), el registro del proveedor en el caso de que sea necesario, el detalle de los gastos, fecha, y lo que sea fundamental
+
+- a la hora de cerrar la venta, ver posibilidad de hacer una modificacion EXCEPCIONAL en caso de que se le ofrezca algun detalle al cliente (que quede registrado)
+
+- añadir funcion para imprimir ticket con detalle de compra para el cliente, desde la pagina de "Nueva venta" (que incluya: nombre de cliente, fecha, detalle de compra, total, nombre del negocio 'Campeones')
+
+- a la hora de cerrar la venta, ver posibilidad de hacer una modificacion EXCEPCIONAL en caso de que se le ofrezca algun detalle al cliente (que quede registrado)
+
+-login funcional real
+
+-validar el cierre de caja, en caso de que el usuario cierre la caja y se equivoque, que pueda volver a modificarla aunque ya se haya cerrado
+
+-funcion para emitir nota de credito cliente
+
+-funcion para sumar articulo al stock en caso de cambio, NO RETIRAR ETIQUETA POR PARTE DE CLIENTE (AVISAR)
+
+
+
+-------------------------- FUTURAS FUNCIONES --------------------------
+-vincular base de datos con tienda nube
+-facturacion desde la app
+-reportes (producto + vendido, cliente + compras, etc)
+
+
+
+--------------------------UPDATES--------------------------
+
+agregar boton enter en form de cambio y devolucion
+validar impresion de tickets en todos los modulos
+mejorar sku de los productos, un poco mas intuitivo, que se realicen en base al tipo de producto (camiseta = CAM), en base al talle definir si es niño (N) o adulto (A). CAMISETA-LIGA-ID-TALLE-TIT/ALT
+alerta de bajo stock en dashboard y mejorar dashboard en general
+poder acceder al detalle de compras historico
+integrar ENTER y ESCAPE a paginas en general, principalmente a ventas para q sea mas agil
+ventana modal para ver el detalle de ventas especificas
+pagina de estadisticas donde se vea el detalle de lo vendido en 1 mes y toda la informacion fundamental para conocer los ingresos del negocio, obteniendo los datos de las cajas historicas
+
+
+
+
+
+ ------------------------------------------------------------------------------------------------------------------------------
+nueva venta:
+integrar historial de ventas del dia en el recuadro vacio que dice 'accesos rapidos' ✅
+
+cambio/devolucion:
+historial de notas de credito con el detalle para reimprimir 
+
+catalogo de producto:
+incluir validacion de contraseña para eliminar productos 
+
+gestion de inventario:
+que las variantes de talles se muestren de una forma un poco mas clara e intuitiva para el usuario, al igual que la visualizacion de los codigo de producto ✅
+que te permita filtrar por liga, niño/adulto, precio, etc  ✅
+
+recuento de stock:
+por ahora nada ✅
+
+registro de compras:
+ver detalle en ventana modal de detalle de compra ✅
+
+impresion de etiquetas:
+arreglar error que no se imprimen correctamente
+validar que te saque de la lista desplegable con tecla ESCAPE
+
+historial de ventas:
+ventana modal en historial de ventas para ver el detalle de la venta ✅
+que permita realizar una venta sin codigo necesariamente, en caso de q no coincida la plata o sobre
+
+historial de cajas:
+arreglar el undefined ese ✅
+ 
+
+
+impresion a arreglar ✅
+
+cambio/devolucion ---> nota de credito
+
+crear categorias ✅
+
+incluir busqueda de productos en la pagina de ventas ✅
