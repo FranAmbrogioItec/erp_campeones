@@ -19,6 +19,7 @@ import LabelPrinterPage from './pages/LabelPrinterPage';
 import StatsPage from './pages/StatsPage';
 import CategoriesPage from './pages/CategoriesPage';
 import ReservationsPage from './pages/ReservationsPage';
+import BudgetPage from './pages/BudgetPage';
 
 
 function App() {
@@ -47,6 +48,7 @@ function App() {
                 <Route path="/reportes" element={<StatsPage />} />
                 <Route path="/categorias" element={<CategoriesPage />} />
                 <Route path="/reservas" element={<ReservationsPage />} />
+                <Route path="/presupuestos" element={<BudgetPage />} />
               </Route>
             </Route>
 

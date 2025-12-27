@@ -3,7 +3,7 @@ from io import StringIO
 from flask import Blueprint, jsonify, request, Response
 from app.extensions import db
 # IMPORTAMOS DESDE TUS ARCHIVOS SEPARADOS
-from app.sales.models import Venta, DetalleVenta, MetodoPago, SesionCaja, MovimientoCaja, Reserva, DetalleReserva
+from app.sales.models import Venta, DetalleVenta, MetodoPago, SesionCaja, MovimientoCaja, Reserva, DetalleReserva, Presupuesto, DetallePresupuesto
 from app.products.models import Producto, ProductoVariante, Inventario
 from flask_jwt_extended import jwt_required
 from sqlalchemy import desc, func, extract
@@ -741,7 +741,7 @@ def create_reserva():
     db.session.commit()
     return jsonify({"msg": "Reserva creada exitosamente", "id": nueva_reserva.id_reserva}), 201
 
-    
+
 @bp.route('/reservas/<int:id>/retirar', methods=['POST'])
 @jwt_required()
 def retirar_reserva(id):
@@ -795,3 +795,66 @@ def cancelar_reserva(id):
     reserva.estado = 'cancelada'
     db.session.commit()
     return jsonify({"msg": "Reserva cancelada y stock restaurado"}), 200
+
+
+
+@bp.route('/presupuestos', methods=['POST'])
+@jwt_required()
+def create_budget():
+    data = request.get_json()
+    items = data.get('items', [])
+    cliente = data.get('cliente', 'Consumidor Final')
+    descuento_pct = int(data.get('descuento', 0))
+    
+    if not items: return jsonify({"msg": "El presupuesto está vacío"}), 400
+
+    # Calcular totales desde el backend para seguridad
+    subtotal_gral = 0
+    detalles_para_guardar = []
+
+    for item in items:
+        precio = float(item['precio'])
+        cantidad = int(item['cantidad'])
+        subtotal_item = precio * cantidad
+        subtotal_gral += subtotal_item
+        
+        detalles_para_guardar.append({
+            "id_variante": item['id_variante'],
+            "cantidad": cantidad,
+            "precio": precio,
+            "subtotal": subtotal_item
+        })
+
+    # Aplicar Descuento
+    monto_descuento = subtotal_gral * (descuento_pct / 100)
+    total_final = subtotal_gral - monto_descuento
+
+    # Crear Cabecera
+    nuevo_presupuesto = Presupuesto(
+        cliente_nombre=cliente,
+        subtotal=subtotal_gral,
+        descuento_porcentaje=descuento_pct,
+        total_final=total_final,
+        observaciones=data.get('observaciones', '')
+    )
+    db.session.add(nuevo_presupuesto)
+    db.session.flush()
+
+    # Guardar Detalles
+    for d in detalles_para_guardar:
+        det = DetallePresupuesto(
+            id_presupuesto=nuevo_presupuesto.id_presupuesto,
+            id_variante=d['id_variante'],
+            cantidad=d['cantidad'],
+            precio_unitario=d['precio'],
+            subtotal=d['subtotal']
+        )
+        db.session.add(det)
+
+    db.session.commit()
+    
+    return jsonify({
+        "msg": "Presupuesto creado", 
+        "id": nuevo_presupuesto.id_presupuesto,
+        "total": total_final
+    }), 201

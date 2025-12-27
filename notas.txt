@@ -111,12 +111,17 @@ cambio/devolucion ---> nota de credito
 
 crear categorias ✅
 
-incluir busqueda de productos en la pagina de ventas ✅
+incluir busqueda de productos en la pagina de ventas ✅ 
 
 
-función para armar presupuestos e impresión
-ver función para reservar mercadería x seña o algo así en sistema, que quede saldo restante
+función para armar presupuestos e impresión ✅
+
 inclusion de guardado de nota de creidito para que se canjee en la caja
+
 funcion para anular una venta en caso de que el cliente se arrepienta al instante y vuelva a ingresar el stock
+
 implementar sonidos para acciones basicas (modificar stock, etc) y animaciones de espera cuando se hace una edicion o accion, para que el usuario sepa que algo esta sucediendo
-modulo para mercaderia reservada, monto de seña, saldo restante a pagar, nombre del cliente, posibilidad de imprimir ticket de reserva
+
+modulo para mercaderia reservada, monto de seña, saldo restante a pagar, nombre del cliente, posibilidad de imprimir ticket de reserva ✅
+
+funcion para añadir una venta sin codigo, en caso de que sea un producto que aun no se haya cargado en el inventario, que se pueda agregar un campo de texto completo para que el usuario pueda agregar el detalle del producto 

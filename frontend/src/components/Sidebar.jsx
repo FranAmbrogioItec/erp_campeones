@@ -49,6 +49,7 @@ const Sidebar = () => {
         { path: '/ventas', name: 'Historial de Ventas', icon: FileText },
         { path: '/caja-historial', name: 'Historial de Cajas', icon: FileText },
         { path: '/reportes', name: 'Estadísticas', icon: BarChart3 },
+        { path: '/presupuestos', name: 'Presupuestos', icon: FileText },
       ],
     },
   ];

@@ -68,6 +68,15 @@ class Venta(db.Model):
     
     detalles = db.relationship(DetalleVenta, backref='venta', lazy=True, cascade="all, delete-orphan")
 
+
+class PagosVenta(db.Model):
+    __tablename__ = 'pagos_venta'
+    
+    id_pago = db.Column(db.Integer, primary_key=True)
+    id_venta = db.Column(db.Integer, db.ForeignKey('ventas.id_venta'), nullable=False)
+    id_metodo_pago = db.Column(db.Integer, db.ForeignKey('metodos_pago.id_metodo_pago'), nullable=False)
+    monto = db.Column(db.Numeric(10, 2), nullable=False)
+
 # --- NUEVO: Relación con Sesión de Caja ---
 class SesionCaja(db.Model):
     __tablename__ = 'sesiones_caja'
@@ -111,4 +120,28 @@ class DetalleReserva(db.Model):
     subtotal = db.Column(db.Numeric(10, 2))
 
     # Relación para acceder al nombre del producto
+    variante = db.relationship('ProductoVariante')
+
+
+class Presupuesto(db.Model):
+    __tablename__ = 'presupuestos'
+    id_presupuesto = db.Column(db.Integer, primary_key=True)
+    cliente_nombre = db.Column(db.String(100))
+    fecha = db.Column(db.DateTime, default=datetime.now)
+    subtotal = db.Column(db.Numeric(10, 2))
+    descuento_porcentaje = db.Column(db.Integer, default=0)
+    total_final = db.Column(db.Numeric(10, 2))
+    observaciones = db.Column(db.Text)
+    
+    detalles = db.relationship('DetallePresupuesto', backref='presupuesto', lazy=True)
+
+class DetallePresupuesto(db.Model):
+    __tablename__ = 'detalle_presupuesto'
+    id_detalle = db.Column(db.Integer, primary_key=True)
+    id_presupuesto = db.Column(db.Integer, db.ForeignKey('presupuestos.id_presupuesto'))
+    id_variante = db.Column(db.Integer, db.ForeignKey('producto_variantes.id_variante'))
+    cantidad = db.Column(db.Integer)
+    precio_unitario = db.Column(db.Numeric(10, 2))
+    subtotal = db.Column(db.Numeric(10, 2))
+    
     variante = db.relationship('ProductoVariante')
